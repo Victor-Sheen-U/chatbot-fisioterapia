@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clase 06 · FastAPI y modelo de lenguaje desde Python</title>
+<link rel="stylesheet" href="/assets/reveal.css">
+<style>
+:root{--navy:#102a4c;--blue:#0077b6;--cyan:#e3f4fa;--ink:#102a4c}
+body{background:#f8fbfd}.reveal{color:var(--ink);font-family:Arial,Helvetica,sans-serif;font-size:36px}
+.reveal .slides section{text-align:left;box-sizing:border-box;padding:34px 48px}
+h1,h2,h3{color:var(--navy);letter-spacing:-.02em;margin:0 0 20px!important;text-transform:none!important}
+.reveal h1{font-size:1.65em}.reveal h2{font-size:1.32em}.reveal h3{font-size:1.04em}
+.reveal p,.reveal li{font-size:.72em;line-height:1.32;margin:.3em 0}
+.lead{font-size:.9em!important}.eyebrow{color:var(--blue);font-size:.48em!important;font-weight:bold;text-transform:uppercase;letter-spacing:.1em}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}.card{background:#fff;border:1px solid #cbdce8;border-left:5px solid #1da9ca;border-radius:8px;padding:18px 20px;min-height:110px}
+.note{background:var(--cyan);padding:13px 18px;border-left:5px solid #1da9ca;border-radius:4px;font-size:.7em!important}
+.code{background:#10233f;color:#f2f7ff;border-radius:8px;padding:16px 20px;font-family:Consolas,monospace;font-size:.52em;line-height:1.34;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}
+.result{background:#0d1e35;color:#f2f7ff;border-radius:8px;padding:13px 16px;min-height:90px;max-height:245px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:18px/1.35 Consolas,monospace}
+.result:empty:before{content:"Aquí aparecerá la respuesta real de la API.";color:#aec6d8}
+button{background:#0077b6;border:0;color:white;border-radius:5px;padding:10px 16px;font-size:17px;cursor:pointer;margin:8px 8px 6px 0}
+button:disabled{opacity:.6;cursor:wait}.secondary{background:#536c84}
+.small{font-size:.56em!important}.reveal input{box-sizing:border-box;border:1px solid #a8bfd0;border-radius:4px;padding:10px 12px;font-size:17px;width:100%;margin:5px 0}
+.tag{display:inline-block;background:#e3f4fa;color:#006e9d;border-radius:99px;padding:4px 12px;font-size:.48em;font-weight:bold}
+.step{color:#0077b6;font-size:.55em!important;font-weight:bold}
+.compact p{font-size:.65em}.compact .code{font-size:.49em}
+.reveal .progress{height:5px;color:#0077b6}
+</style>
+</head>
+<body><div class="reveal"><div class="slides">
+<section id="inicio">
+  <p class="eyebrow">Creación de chatbots · Segundo corte</p>
+  <h1>De FastAPI al modelo de lenguaje con Python</h1>
+  <p class="lead">Vamos a retomar la API del primer corte y a seguir una solicitud hasta que cambie una reserva en el JSON. Después construiremos en Python la conexión entre Groq y esa FastAPI. Esa lógica será la base de la interfaz Gradio.</p>
+  <div class="note">Para el repaso usaré una API de ejemplo. Ustedes conservan la FastAPI y los JSON que ya tienen; hoy solo crearán un archivo Python nuevo.</div>
+</section>
+<section id="recorrido">
+  <h2>El trabajo de cada parte</h2>
+  <div class="cols"><div class="card"><h3>La FastAPI que ya tenemos</h3><p>Valida servicios y horarios. Consulta, crea, modifica y cancela reservas. Es la que guarda los cambios.</p></div><div class="card"><h3>El archivo Python de hoy</h3><p>Envía la frase a Groq, revisa la acción que devuelve y llama a la ruta adecuada de FastAPI. Más adelante Gradio utilizará estas funciones.</p></div></div>
+  <p class="note">Vamos a empezar por FastAPI para recordar qué puede hacer. Después conectaremos esa capacidad con Groq sin duplicar las reglas del negocio.</p>
+</section>
+<section id="fastapi-1" class="compact">
+  <p class="step">FASTAPI · PASO 1</p><h2>Crear la aplicación y una ruta</h2>
+  <div class="cols"><div><p>Primero creamos la aplicación con <code>FastAPI()</code>. Luego definimos una ruta con <code>@app.get</code>. Cuando abrimos esa dirección, FastAPI ejecuta la función y nos devuelve el diccionario como JSON.</p><pre class="code">from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/api/saludo")
+def saludo():
+    return {"mensaje": "La API está funcionando"}</pre></div>
+  <div><button data-action="saludo">Probar GET /api/saludo</button><div class="result" data-result="saludo"></div><p class="small">Busquen un decorador <code>@app.get</code> en su propio <code>main.py</code>. ¿Qué función se ejecuta al llamar esa ruta?</p></div></div>
+</section>
+<section id="fastapi-2" class="compact">
+  <p class="step">FASTAPI · PASO 2</p><h2>Leer los servicios del negocio</h2>
+  <div class="cols"><div><p>Ahora leemos los servicios desde <code>negocio.json</code>. No escribimos el precio dentro de la ruta: lo tomamos del archivo. Si cambiamos el JSON y repetimos la consulta, veremos el precio actualizado.</p><pre class="code">def negocio():
+    return json.loads(
+        (BASE / "negocio.json").read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+@app.get("/api/servicios")
+def servicios():
+    return negocio()["servicios"]</pre></div>
+  <div><button data-action="servicios">Ejecutar GET /api/servicios</button><div class="result" data-result="servicios"></div></div></div>
+</section>
+<section id="fastapi-3" class="compact">
+  <p class="step">FASTAPI · PASO 3</p><h2>Recibir parámetros y calcular disponibilidad</h2>
+  <div class="cols"><div><p>En esta ruta enviamos <code>fecha</code> y <code>servicio</code> en la URL. FastAPI comprueba el formato de la fecha. Nosotros revisamos las reservas activas y quitamos los horarios que ya están ocupados.</p><pre class="code">@app.get("/api/disponibilidad")
+def disponibilidad(fecha: date, servicio: str):
+    if servicio not in negocio()["servicios"]:
+        raise HTTPException(404, "Servicio desconocido")
+    # Filtrar horarios según fecha y reservas...
+    return {"fecha": fecha, "horas": horas}</pre><p class="small">Si consultamos un domingo, la lista de horas debe quedar vacía.</p></div>
+  <div><button data-action="disponibilidad">Buscar horario disponible</button><div class="result" data-result="disponibilidad"></div></div></div>
+</section>
+<section id="fastapi-4" class="compact">
+  <p class="step">FASTAPI · PASO 4</p><h2>Validar el cuerpo con Pydantic</h2>
+  <div class="cols"><div><p>Para crear una reserva usamos <code>POST</code>. Los datos van en el cuerpo de la petición. Con <code>ReservaNueva</code> decimos qué campos deben llegar; si falta alguno, FastAPI responde con un error antes de intentar guardar.</p><pre class="code">class ReservaNueva(BaseModel):
+    cliente: str = Field(min_length=2)
+    servicio: str
+    fecha: date
+    hora: str
+    confirmada: bool</pre><p class="note">Además de validar los campos, tenemos que comprobar que la persona confirmó y que la hora sigue libre.</p></div>
+  <div><button data-action="invalida">Probar petición incompleta</button><div class="result" data-result="invalida"></div></div></div>
+</section>
+<section id="fastapi-5" class="compact">
+  <p class="step">FASTAPI · PASO 5</p><h2>Crear y guardar una reserva</h2>
+  <div class="cols"><div><p>Si la reserva está confirmada y la hora está libre, generamos un código y escribimos el registro en <code>reservas_demo.json</code>. El <code>201</code> nos indica que la API creó una reserva nueva.</p><pre class="code">@app.post("/api/reservas", status_code=201)
+def crear_reserva(datos: ReservaNueva):
+    if not datos.confirmada:
+        raise HTTPException(400, "Debe confirmar")
+    # Comprobar disponibilidad...
+    registros.append(reserva)
+    guardar_reservas(registros)
+    return reserva</pre></div>
+  <div><button data-action="crear">Crear reserva de ejemplo</button><div class="result" data-result="crear"></div><p class="small">Aquí voy a abrir el JSON para comprobar que el código sí quedó guardado.</p></div></div>
+</section>
+<section id="fastapi-6" class="compact">
+  <p class="step">FASTAPI · PASO 6</p><h2>Consultar una reserva por su código</h2>
+  <div class="cols"><div><p>El <code>{codigo}</code> de la ruta es el identificador que acabamos de recibir. Lo usamos para buscar la reserva en el archivo. Si escribimos un código que no existe, la API devuelve <code>404</code>.</p><pre class="code">@app.get("/api/reservas/{codigo}")
+def consultar_reserva(codigo: str):
+    for reserva in leer_reservas():
+        if reserva["codigo"] == codigo:
+            return reserva
+    raise HTTPException(404, "Reserva no encontrada")</pre></div>
+  <div><button data-action="consultar">Consultar la reserva creada</button><div class="result" data-result="consultar"></div></div></div>
+</section>
+<section id="fastapi-modificar" class="compact">
+  <p class="step">FASTAPI · PASO 7</p><h2>Modificar la reserva</h2>
+  <div class="cols"><div><p>Antes de cambiarla, buscamos la reserva por su código y comprobamos que siga activa. Después validamos la nueva hora, actualizamos el registro y guardamos otra vez el JSON. El código de la reserva no cambia.</p><pre class="code">class CambioReserva(BaseModel):
+    servicio: str
+    fecha: date
+    hora: str
+
+@app.put("/api/reservas/{codigo}")
+def modificar_reserva(codigo: str, datos: CambioReserva):
+    # Buscar, validar la nueva hora y guardar...
+    reserva.update(
+        servicio=datos.servicio,
+        fecha=datos.fecha.isoformat(),
+        hora=datos.hora
+    )
+    guardar_reservas(registros)
+    return reserva</pre></div>
+  <div><button data-action="modificar">Cambiar la hora de la reserva</button><div class="result" data-result="modificar"></div><p class="small">Comparen la hora nueva con la que apareció al crearla. Abriré el JSON para comprobar el cambio.</p></div></div>
+</section>
+<section id="fastapi-7" class="compact">
+  <p class="step">FASTAPI · PASO 8</p><h2>Cancelar y comprobar el estado</h2>
+  <div class="cols"><div><p>Por último, cancelamos la reserva. No borramos el registro: cambiamos su estado a <code>cancelada</code> y guardamos el archivo. Esa hora vuelve a estar disponible.</p><pre class="code">@app.delete("/api/reservas/{codigo}")
+def cancelar_reserva(codigo: str):
+    registros = leer_reservas()
+    # Buscar y cambiar el estado...
+    reserva["estado"] = "cancelada"
+    guardar_reservas(registros)
+    return reserva</pre></div>
+  <div><button data-action="cancelar">Cancelar la reserva</button><div class="result" data-result="cancelar"></div><p class="small">Si volvemos a consultarla, veremos el estado <code>cancelada</code>.</p></div></div>
+</section>
+<section id="fastapi-8">
+  <h2>FastAPI también genera documentación</h2>
+  <p>En <code>/docs</code> podemos revisar las rutas, los parámetros y el cuerpo que recibe cada una. Aquí voy a mostrar el esquema de esta API y ustedes podrán identificar en cuál ruta se crea, consulta, modifica y cancela una reserva.</p>
+  <button data-action="schema">Ver las rutas de la API</button><div class="result" data-result="schema"></div>
+</section>
+<section id="transicion">
+  <h2>Ahora Python conectará las dos API</h2>
+  <p>El archivo <code>consulta_llm.py</code> será la lógica del chatbot. Recibirá lo que escribe la persona, pedirá a Groq que identifique la intención y llamará a la ruta correspondiente de la FastAPI que ya construyeron. Más adelante Gradio pondrá una interfaz sobre estas funciones.</p>
+  <div class="cols"><div class="card"><h3>Groq</h3><p>Interpreta la solicitud y devuelve datos estructurados. No guarda reservas.</p></div><div class="card"><h3>FastAPI</h3><p>Consulta servicios y disponibilidad; valida, crea, modifica o cancela reservas en el almacenamiento del equipo.</p></div></div>
+</section>
+<section id="groq-1" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 1</p><h2>Una petición HTTP tiene partes</h2>
+  <div class="cols"><div><p>Cuando un programa llama a una API, indica una dirección, un método y, cuando corresponde, datos para procesar. <code>GET</code> consulta; <code>POST</code> envía datos para crear o procesar. Los encabezados describen el formato o llevan la credencial.</p><pre class="code">GET  /api/servicios
+POST /api/reservas
+
+POST https://api.groq.com/openai/v1/chat/completions
+Authorization: Bearer CLAVE
+Content-Type: application/json</pre></div><div><button data-action="contexto">Consultar la API del ejemplo</button><div class="result" data-result="contexto"></div><p class="small">Aquí los datos vienen de FastAPI. El cliente no abre el JSON por su cuenta.</p></div></div>
+</section>
+<section id="groq-2" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 2</p><h2>¿Qué es el payload?</h2>
+  <div class="cols"><div><p><em>Payload</em> significa «carga útil»: son los datos que enviamos en el <strong>cuerpo</strong> de una petición. En Python los armamos como un diccionario. Antes de enviarlos, <code>json.dumps()</code> los convierte en texto JSON y <code>encode("utf-8")</code> en bytes. La URL y la API key van por separado.</p><pre class="code">payload = {
+    "model": modelo,
+    "messages": [
+        {"role": "system", "content": INSTRUCCIONES},
+        {"role": "user", "content": pregunta},
+    ],
+    "stream": False,
+}</pre></div><div><button data-action="payload">Ver el cuerpo de ejemplo</button><div class="result" data-result="payload"></div><p class="small"><code>model</code> elige el modelo; <code>messages</code> contiene los mensajes; <code>stream: false</code> pide la respuesta completa.</p></div></div>
+</section>
+<section id="groq-roles" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 3</p><h2>¿Para qué sirven system y user?</h2>
+  <div class="cols"><div class="card"><h3>system</h3><p>Indica la tarea y el formato esperado. Aquí pedimos que Groq identifique una acción y devuelva un objeto JSON. Los datos que no aparezcan en la pregunta deben quedar vacíos.</p></div><div class="card"><h3>user</h3><p>Contiene lo que acaba de pedir la persona: «¿Qué servicios tienen?» o «Quiero cambiar mi reserva». En esta clase enviamos una solicitud a la vez; todavía no añadimos mensajes anteriores.</p></div></div>
+  <p class="note">Los roles organizan los mensajes al modelo. No son rutas de FastAPI ni campos que se guarden en reservas.json.</p>
+</section>
+<section id="groq-3" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 4</p><h2>Enviar la petición a Groq</h2>
+  <div class="cols"><div><p>Con <code>Request</code> juntamos la dirección de Groq, el método <code>POST</code>, los encabezados y el payload convertido a JSON. La API key va en <code>Authorization</code>; no va en la pregunta ni en el cuerpo.</p><pre class="code">Request(
+  GROQ_URL,
+  data=json.dumps(payload).encode("utf-8"),
+  headers={
+    "Authorization": f"Bearer {clave}",
+    "Content-Type": "application/json"
+  },
+  method="POST"
+)</pre></div><div class="card"><h3>Antes de probar</h3><p>Necesitamos una API key de Groq y el ID de un modelo habilitado en la cuenta. Guardamos la clave fuera del código. Si hay un error, miraremos primero el código HTTP: una clave incorrecta no se corrige cambiando el prompt.</p></div></div>
+</section>
+<section id="groq-plan" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 5</p><h2>La respuesta del modelo es un plan</h2>
+  <div class="cols"><div><p>Groq devuelve un JSON de respuesta. Dentro de <code>choices[0].message.content</code> pedimos otro JSON más pequeño: la acción y los datos que logró identificar. Python lo lee con <code>json.loads()</code> y comprueba que la acción esté permitida.</p><pre class="code">{
+  "accion": "modificar",
+  "codigo": "A1B2C3D4",
+  "servicio": "corte",
+  "fecha": "2026-09-28",
+  "hora": "10:00"
+}</pre></div><div class="card"><h3>Un plan todavía no es una reserva</h3><p>El modelo puede equivocarse o dejar datos incompletos. Python revisa los campos y, si se va a crear, modificar o cancelar, pide confirmación a la persona. Solo después llama a FastAPI.</p></div></div>
+</section>
+<section id="groq-api" class="compact">
+  <p class="step">CLIENTE PYTHON · FUNDAMENTO 6</p><h2>Python llama la ruta de FastAPI</h2>
+  <p>Con la acción validada, el programa elige la ruta: <code>GET /api/servicios</code>, <code>GET /api/disponibilidad</code>, <code>POST /api/reservas</code>, <code>PUT /api/reservas/{codigo}</code> o <code>DELETE /api/reservas/{codigo}</code>. FastAPI vuelve a comprobar las reglas y guarda el resultado.</p>
+  <div class="cols"><div class="card"><h3>Quién decide qué pedir</h3><p>Groq interpreta la frase. Python acepta solo las acciones previstas y prepara la petición HTTP.</p></div><div class="card"><h3>Quién decide si es válido</h3><p>FastAPI verifica servicios, fechas, horarios y estados. El modelo nunca escribe directamente el JSON.</p></div></div>
+</section>
+<section id="groq-4" class="compact">
+  <p class="step">DEMOSTRACIÓN INTEGRADA</p><h2>De una frase a una ruta de FastAPI</h2>
+  <div class="cols"><div><label class="small">API key de Groq (no se muestra)</label><input id="groq-key" type="password" autocomplete="off" placeholder="gsk_..."><label class="small">ID del modelo habilitado</label><input id="groq-model" placeholder="Pega el ID desde tu cuenta"><label class="small">Solicitud</label><input id="groq-question" value="¿Qué servicios tienen?"><button data-action="groq">Interpretar y consultar</button><button data-action="confirmar_groq" class="secondary" style="display:none">Confirmar operación</button></div>
+  <div><div class="result" data-result="groq"></div><p class="small">Primero probaremos una consulta. Para crear, modificar o cancelar, el programa mostrará el plan y pedirá confirmación antes de llamar a FastAPI.</p></div></div>
+</section>
+<section id="limites">
+  <h2>¿Qué comprobamos al terminar?</h2>
+  <div class="cols"><div class="card"><h3>Groq interpretó</h3><p>Identificó una acción y algunos datos. Eso es una propuesta, no una operación ejecutada.</p></div><div class="card"><h3>FastAPI ejecutó</h3><p>Respondió a la petición de Python y, cuando correspondía, cambió una reserva. Comprobamos el código y el registro guardado.</p></div></div>
+  <p class="note">Todavía pedimos todos los datos en una sola solicitud. En la próxima clase añadiremos historial para recuperar lo dicho en turnos anteriores.</p>
+</section>
+<section id="laboratorio">
+  <h2>Trabajo de hoy</h2>
+  <p>En su proyecto creen únicamente <code>consulta_llm.py</code>. Ajusten <code>API_BASE</code> y <code>RUTAS</code> a los endpoints que ya tiene su equipo. Si su FastAPI recibe otros nombres de campos, adapten también los cuerpos de <code>POST</code> y <code>PUT</code>.</p>
+  <p>Con la FastAPI encendida, prueben una consulta de servicios o disponibilidad. Después prueben crear o modificar una reserva: revisen el plan, confirmen y comprueben el cambio mediante la API y el JSON.</p>
+  <div class="note">Entreguen el archivo Python y evidencia breve de las peticiones. No entreguen claves privadas. En la clase de Gradio usaremos estas mismas funciones detrás de una interfaz.</div>
+</section>
+</div></div>
+<script src="/assets/reveal.js"></script>
+<script>
+Reveal.initialize({hash:true,controls:true,progress:true,center:false,width:1280,height:720,margin:0.04});
+let codigo="",planPendiente=null;
+function proximaFecha(){let d=new Date();d.setDate(d.getDate()+2);while(d.getDay()===0)d.setDate(d.getDate()+1);return [d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-")}
+async function solicitud(url,method="GET",body){const r=await fetch(url,{method,headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined});let data;try{data=await r.json()}catch{data={error:"Respuesta no es JSON"}}return {status:r.status,data}}
+async function accion(tipo){
+ const fecha=proximaFecha(); let r;
+ if(tipo==="saludo")r=await solicitud("/api/saludo");
+ if(tipo==="servicios")r=await solicitud("/api/servicios");
+ if(tipo==="disponibilidad")r=await solicitud("/api/disponibilidad?fecha="+fecha+"&servicio=corte");
+ if(tipo==="invalida")r=await solicitud("/api/reservas","POST",{cliente:"A"});
+ if(tipo==="crear"){let disp=await solicitud("/api/disponibilidad?fecha="+fecha+"&servicio=corte");let hora=disp.data.horas?.[0];if(!hora)throw Error("No hay horarios libres para la fecha de ejemplo.");r=await solicitud("/api/reservas","POST",{cliente:"Estudiante de ejemplo",servicio:"corte",fecha,hora,confirmada:true});if(r.status===201)codigo=r.data.codigo}
+ if(tipo==="modificar"){if(!codigo)throw Error("Primero crea una reserva en el paso 5.");let disp=await solicitud("/api/disponibilidad?fecha="+fecha+"&servicio=corte");let hora=disp.data.horas?.[0];if(!hora)throw Error("No hay otra hora libre para modificar la reserva.");r=await solicitud("/api/reservas/"+codigo,"PUT",{servicio:"corte",fecha,hora})}
+ if(tipo==="consultar"||tipo==="cancelar"){if(!codigo)throw Error("Primero crea una reserva en el paso 5.");r=await solicitud("/api/reservas/"+codigo,tipo==="cancelar"?"DELETE":"GET")}
+ if(tipo==="schema"){let o=await solicitud("/openapi.json");r={status:o.status,data:{title:o.data.info?.title,rutas:Object.keys(o.data.paths||{})}}}
+ if(tipo==="contexto")r=await solicitud("/demo/contexto");
+ if(tipo==="payload")r=await solicitud("/demo/payload");
+ if(tipo==="groq")r=await solicitud("/demo/groq","POST",{clave:document.querySelector("#groq-key").value,modelo:document.querySelector("#groq-model").value,pregunta:document.querySelector("#groq-question").value});
+ if(tipo==="confirmar_groq"){if(!planPendiente)throw Error("Primero interpreta una solicitud que requiera confirmación.");r=await solicitud("/demo/groq","POST",{clave:"",modelo:document.querySelector("#groq-model").value,pregunta:document.querySelector("#groq-question").value,confirmar:true,plan:planPendiente})}
+ return r;
+}
+document.querySelectorAll("[data-action]").forEach(b=>b.addEventListener("click",async()=>{
+ const tipo=b.dataset.action, panel=document.querySelector('[data-result="'+(tipo==="confirmar_groq"?"groq":tipo)+'"]');
+ b.disabled=true;panel.textContent="Ejecutando la petición real...";
+ try{let r=await accion(tipo);panel.textContent="HTTP "+r.status+"\n"+JSON.stringify(r.data,null,2);if(tipo==="groq"||tipo==="confirmar_groq"){planPendiente=r.data?.tipo==="confirmacion"?r.data.plan:null;document.querySelector('[data-action="confirmar_groq"]').style.display=planPendiente?"inline-block":"none"}}
+ catch(e){panel.textContent="No se pudo completar: "+e.message+"\nComprueba que abriste http://127.0.0.1:8027/ y que el servidor sigue encendido."}
+ finally{b.disabled=false}
+}));
+</script></body></html>

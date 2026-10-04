@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  fastapi-fisioterapia:
+    build: .
+    container_name: vlfisioterapia_api
+    restart: unless-stopped
+    ports:
+      - "8012:8012"
+    volumes:
+      - ./citas.json:/app/citas.json
+      - ./clinica.json:/app/clinica.json
+    environment:
+      - PORT=8012
+      - HOST=0.0.0.0
+      - ENVIRONMENT=production
+    networks:
+      - vlfisioterapia_net
+
+  flowise:
+    image: flowiseai/flowise:latest
+    container_name: vlfisioterapia_flowise
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+    volumes:
+      - flowise_data:/root/.flowise
+    networks:
+      - vlfisioterapia_net
+
+volumes:
+  flowise_data:
+
+networks:
+  vlfisioterapia_net:
+    driver: bridge

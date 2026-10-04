@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clase 07 · Historial y funciones en Python</title>
+<link rel="stylesheet" href="/assets/reveal.css">
+<style>
+:root{--navy:#102a4c;--blue:#0077b6;--cyan:#e3f4fa;--ink:#102a4c}
+body{background:#f8fbfd}.reveal{color:var(--ink);font-family:Arial,Helvetica,sans-serif;font-size:36px}
+.reveal .slides section{text-align:left;box-sizing:border-box;padding:34px 48px}
+h1,h2,h3{color:var(--navy);letter-spacing:-.02em;margin:0 0 20px!important;text-transform:none!important}
+.reveal h1{font-size:1.65em}.reveal h2{font-size:1.32em}.reveal h3{font-size:1.04em}
+.reveal p,.reveal li{font-size:.72em;line-height:1.32;margin:.3em 0}
+.lead{font-size:.9em!important}.eyebrow{color:var(--blue);font-size:.48em!important;font-weight:bold;text-transform:uppercase;letter-spacing:.1em}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}.card{background:#fff;border:1px solid #cbdce8;border-left:5px solid #1da9ca;border-radius:8px;padding:18px 20px;min-height:110px}
+.note{background:var(--cyan);padding:13px 18px;border-left:5px solid #1da9ca;border-radius:4px;font-size:.7em!important}
+.code{background:#10233f;color:#f2f7ff;border-radius:8px;padding:16px 20px;font-family:Consolas,monospace;font-size:.52em;line-height:1.34;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}
+.result{background:#0d1e35;color:#f2f7ff;border-radius:8px;padding:13px 16px;min-height:90px;max-height:330px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:18px/1.35 Consolas,monospace}
+.result:empty:before{content:"Aquí veremos lo que ejecutó Python.";color:#aec6d8}
+button{background:#0077b6;border:0;color:white;border-radius:5px;padding:10px 16px;font-size:17px;cursor:pointer;margin:8px 8px 6px 0}
+button:disabled{opacity:.6;cursor:wait}.secondary{background:#536c84}
+.small{font-size:.56em!important}.reveal input{box-sizing:border-box;border:1px solid #a8bfd0;border-radius:4px;padding:10px 12px;font-size:17px;width:100%;margin:5px 0}
+.step{color:#0077b6;font-size:.55em!important;font-weight:bold}.compact p{font-size:.65em}.compact .code{font-size:.49em}
+.reveal .progress{height:5px;color:#0077b6}
+</style>
+</head>
+<body><div class="reveal"><div class="slides">
+<section id="inicio">
+  <p class="eyebrow">Creación de chatbots · Segundo corte</p>
+  <h1>Clase 07 · Conversación con historial</h1>
+  <p class="lead">La clase pasada conectamos Groq con nuestra FastAPI. Hoy haremos que una pregunta pueda apoyarse en lo dicho antes. Quiero que veamos exactamente qué se guarda en <code>messages[]</code> y qué se vuelve a enviar en cada turno.</p>
+  <div class="note">Los botones ejecutan Python y muestran el historial en esta misma pantalla. Comenzaremos con respuestas locales programadas para estudiar el mecanismo; al final podremos repetirlo con Groq.</div>
+</section>
+<section id="problema">
+  <h2>¿Qué faltaba en la clase anterior?</h2>
+  <p>Si enviamos «Me llamo Laura» y después enviamos solo «¿Cómo me llamo?», la segunda petición no lleva el nombre. El modelo no puede leer la terminal ni recuperar por sí solo una petición anterior de nuestro programa.</p>
+  <div class="cols"><div class="card"><h3>Una sola pregunta</h3><p>Enviamos las instrucciones y la frase actual. La respuesta depende de ese contenido.</p></div><div class="card"><h3>Conversación con historial</h3><p>Enviamos las instrucciones, los turnos anteriores y la frase actual, en ese orden.</p></div></div>
+  <p class="note">La memoria que construiremos hoy está en la lista de Python. El programa decide qué mensajes incluir en la siguiente petición.</p>
+</section>
+<section id="roles" class="compact">
+  <p class="step">FUNDAMENTO 1</p><h2>Los roles de cada mensaje</h2>
+  <div class="cols"><div><p>Cada elemento de <code>messages[]</code> tiene un <code>role</code> y un <code>content</code>. <code>system</code> contiene las instrucciones; <code>user</code>, lo que escribe la persona; <code>assistant</code>, la respuesta. Guardar también la respuesta permite que el siguiente turno tenga el contexto completo.</p><pre class="code">{"role": "system", "content": "Responde en español"}
+{"role": "user", "content": "¿Qué servicios tienen?"}
+{"role": "assistant", "content": "Tenemos corte y barba"}</pre></div>
+  <div><button data-action="roles">Ver la lista con los tres roles</button><div class="result" data-result="roles"></div></div></div>
+</section>
+<section id="lista" class="compact">
+  <p class="step">FUNDAMENTO 2</p><h2>Empezamos con una lista</h2>
+  <div class="cols"><div><p>La conversación nueva comienza con el mensaje <code>system</code>. Todavía no hay preguntas ni respuestas. En cada turno agregaremos dos mensajes más: uno de <code>user</code> y uno de <code>assistant</code>.</p><pre class="code">def nuevo_historial():
+    return [
+        {"role": "system", "content": INSTRUCCIONES}
+    ]</pre><p class="small">Pulsa el botón para iniciar. Si ya hiciste otras pruebas, también sirve para volver al comienzo.</p></div>
+  <div><button data-action="iniciar">Iniciar conversación</button><div class="result" data-result="iniciar"></div></div></div>
+</section>
+<section id="turno1" class="compact">
+  <p class="step">FUNDAMENTO 3 · PRIMER TURNO</p><h2>«Me llamo Laura»</h2>
+  <div class="cols"><div><p>Agregamos el mensaje de la persona a la lista. Después calculamos la respuesta local y añadimos un mensaje <code>assistant</code>. Quiero que observen el orden y cuántos elementos hay al terminar.</p><pre class="code">mensajes = historial + [
+    {"role": "user", "content": "Me llamo Laura"}
+]
+mensajes += [
+    {"role": "assistant", "content": respuesta}
+]</pre></div>
+  <div><button data-action="turno1">Ejecutar primer turno</button><div class="result" data-result="turno1"></div><p class="small">Modo local: la respuesta la produce una función Python, no Groq.</p></div></div>
+</section>
+<section id="turno2" class="compact">
+  <p class="step">FUNDAMENTO 4 · SEGUNDO TURNO</p><h2>«¿Cómo me llamo?»</h2>
+  <div class="cols"><div><p>Ahora la función recibe el historial que quedó del turno anterior. Puede encontrar «Laura» en el mensaje previo de <code>user</code>. La respuesta nueva se agrega al final de la misma conversación.</p><pre class="code">mensajes_para_enviar = historial + [
+    {"role": "user", "content": "¿Cómo me llamo?"}
+]</pre><p class="note">Si no ejecutaste el primer turno, la función dirá que no conoce el nombre. Eso también es correcto.</p></div>
+  <div><button data-action="turno2">Ejecutar segundo turno</button><div class="result" data-result="turno2"></div></div></div>
+</section>
+<section id="comparar" class="compact">
+  <p class="step">COMPROBACIÓN</p><h2>La misma pregunta sin historial</h2>
+  <div class="cols"><div><p>Vamos a enviar «¿Cómo me llamo?» en una conversación nueva. Allí solo estarán <code>system</code> y la pregunta actual. La función no podrá encontrar el nombre. Esta comparación muestra qué información aportó el historial.</p><pre class="code">sin_historial = [
+    {"role": "system", "content": INSTRUCCIONES},
+    {"role": "user", "content": "¿Cómo me llamo?"}
+]</pre></div>
+  <div><button data-action="sinmemoria">Probar sin mensajes anteriores</button><div class="result" data-result="sinmemoria"></div></div></div>
+</section>
+<section id="ver_historial" class="compact">
+  <p class="step">FUNDAMENTO 5</p><h2>Qué enviamos en el siguiente turno</h2>
+  <div class="cols"><div><p>El historial conserva el orden completo. Cuando consultemos Groq, <code>messages</code> será esta lista más la pregunta nueva. El proveedor recibirá esos mensajes; no abrirá una base de datos ni buscará por su cuenta conversaciones anteriores.</p><pre class="code">payload = {
+    "model": modelo,
+    "messages": historial + [
+        {"role": "user", "content": pregunta}
+    ],
+    "stream": False,
+}</pre></div>
+  <div><button data-action="estado">Ver el historial actual</button><div class="result" data-result="estado"></div><p class="small">Cada turno completo añade un mensaje <code>user</code> y uno <code>assistant</code>.</p></div></div>
+</section>
+<section id="funciones" class="compact">
+  <p class="step">FUNDAMENTO 6</p><h2>La conversación y el negocio van por separado</h2>
+  <div class="cols"><div><p>El historial ayuda a interpretar lo que la persona quiere. No es el catálogo ni el archivo de reservas. Una función aparte consulta los datos del negocio. En los proyectos de los equipos, esa función seguirá llamando a la FastAPI.</p><pre class="code">def consultar_servicios():
+    return negocio["servicios"]
+
+# En consulta_llm.py:
+# ejecutar(plan) llama a la ruta de FastAPI.</pre></div>
+  <div><button data-action="funcion">Ejecutar consultar_servicios()</button><div class="result" data-result="funcion"></div><p class="small">Esta demostración lee el catálogo de ejemplo. No cambia el historial de la conversación.</p></div></div>
+</section>
+<section id="error" class="compact">
+  <p class="step">FUNDAMENTO 7</p><h2>Si falla la petición, no guardamos una respuesta</h2>
+  <div class="cols"><div><p>Para consultar Groq necesitamos tanto la clave como el ID del modelo. Aquí provocaré un error de configuración antes de usar la red. Después consultaré la lista: el turno fallido no debe aparecer como una respuesta del asistente.</p><pre class="code">candidatos = historial + [mensaje_usuario]
+respuesta = llamar_groq(candidatos)
+# Solo si llegó correctamente:
+historial = candidatos + [mensaje_asistente]</pre></div>
+  <div><button data-action="error">Provocar error de configuración</button><button data-action="estado_error" class="secondary">Comprobar historial</button><div class="result" data-result="error"></div></div></div>
+</section>
+<section id="reinicio" class="compact">
+  <p class="step">FUNDAMENTO 8</p><h2>Reiniciar la conversación</h2>
+  <div class="cols"><div><p>Reiniciar significa crear otra lista con solo <code>system</code>. Ya no enviamos a Groq el nombre ni los turnos de la conversación anterior. Las reservas de FastAPI no se borran por reiniciar el chat: son datos del negocio, no historial.</p><pre class="code">historial = nuevo_historial()
+# Resultado: un solo mensaje system.</pre></div>
+  <div><button data-action="reiniciar">Reiniciar ahora</button><div class="result" data-result="reiniciar"></div><p class="small">Después vuelve a preguntar «¿Cómo me llamo?» en la diapositiva del segundo turno.</p></div></div>
+</section>
+<section id="groq" class="compact">
+  <p class="step">DEMOSTRACIÓN REAL · OPCIONAL</p><h2>Enviar el historial acumulado a Groq</h2>
+  <div class="cols"><div><label class="small">API key de Groq (no se muestra)</label><input id="clave" type="password" autocomplete="off" placeholder="gsk_..."><label class="small">ID del modelo habilitado</label><input id="modelo" placeholder="Pega el ID desde tu cuenta"><label class="small">Escribe un mensaje</label><input id="pregunta" value="Me llamo Laura"><button data-action="groq">Enviar a Groq</button><button data-action="reiniciar_groq" class="secondary">Reiniciar</button></div>
+  <div><div class="result" data-result="groq"></div><p class="small">La lista de esta pestaña se envía completa en cada turno. Haz una segunda pregunta para comprobar qué recuerda el modelo. La clave no se guarda en el historial.</p></div></div>
+</section>
+<section id="gradio">
+  <h2>Lo que haremos después con Gradio</h2>
+  <p>Hoy la terminal recibe la pregunta y nuestra lista de Python conserva los turnos. En la clase 08 Gradio pondrá una interfaz sobre las mismas funciones. Cada sesión tendrá su propio historial y un botón de reinicio.</p>
+  <div class="note">El historial del chat y las reservas siguen separados. Gradio mostrará la conversación; la FastAPI continuará validando y guardando las operaciones del negocio.</div>
+</section>
+<section id="laboratorio">
+  <h2>Trabajo de hoy</h2>
+  <p>En la carpeta donde ya está <code>consulta_llm.py</code>, añadan <code>chatbot_memoria.py</code>. Mantengan la FastAPI de su equipo encendida y hagan una solicitud en dos turnos: primero dejen un dato pendiente y luego complétenlo. Revisen la lista de mensajes antes de confirmar cualquier operación.</p>
+  <p>Después escriban <code>REINICIAR</code> y comprueben que la conversación anterior ya no se usa. Conserven una evidencia de los turnos, del historial y del reinicio.</p>
+  <div class="note">Entreguen el archivo nuevo y una bitácora breve. Expliquen qué función consulta Groq, cuál llama a FastAPI y por qué reiniciar el chat no borra las reservas.</div>
+</section>
+</div></div>
+<script src="/assets/reveal.js"></script>
+<script>
+Reveal.initialize({hash:true,controls:true,progress:true,center:false,width:1280,height:720,margin:0.04});
+const sesion=sessionStorage.getItem("clase07_sesion")||crypto.randomUUID();
+sessionStorage.setItem("clase07_sesion",sesion);
+async function pedir(url,metodo="GET",datos){const r=await fetch(url,{method:metodo,headers:datos?{"Content-Type":"application/json"}:{},body:datos?JSON.stringify(datos):undefined});let cuerpo;try{cuerpo=await r.json()}catch{cuerpo={detail:"La respuesta no es JSON"}}return {status:r.status,cuerpo}}
+async function accion(tipo){
+ if(tipo==="roles")return pedir("/demo/roles");
+ if(tipo==="iniciar"||tipo==="reiniciar"||tipo==="reiniciar_groq")return pedir("/demo/reiniciar","POST",{sesion});
+ if(tipo==="turno1")return pedir("/demo/turno","POST",{sesion,pregunta:"Me llamo Laura"});
+ if(tipo==="turno2")return pedir("/demo/turno","POST",{sesion,pregunta:"¿Cómo me llamo?"});
+ if(tipo==="sinmemoria")return pedir("/demo/sin_memoria");
+ if(tipo==="estado"||tipo==="estado_error")return pedir("/demo/historial?sesion="+encodeURIComponent(sesion));
+ if(tipo==="funcion")return pedir("/demo/funcion");
+ if(tipo==="error")return pedir("/demo/turno","POST",{sesion,pregunta:"¿Cómo me llamo?",clave:"clave-de-ejemplo",modelo:""});
+ if(tipo==="groq"){const clave=document.querySelector("#clave").value,modelo=document.querySelector("#modelo").value;if(!clave||!modelo)throw Error("Escribe la API key y el ID del modelo para esta prueba.");return pedir("/demo/turno","POST",{sesion,pregunta:document.querySelector("#pregunta").value,clave,modelo})}
+}
+document.querySelectorAll("[data-action]").forEach(b=>b.addEventListener("click",async()=>{
+ const tipo=b.dataset.action, panel=document.querySelector('[data-result="'+(tipo==="estado_error"?"error":tipo==="reiniciar_groq"?"groq":tipo)+'"]');
+ b.disabled=true;panel.textContent="Ejecutando Python...";
+ try{const r=await accion(tipo);panel.textContent="HTTP "+r.status+"\n"+JSON.stringify(r.cuerpo,null,2)}
+ catch(e){panel.textContent="No pude ejecutar el ejemplo: "+e.message+"\nComprueba que abriste http://127.0.0.1:8028/ y que el servidor sigue encendido."}
+ finally{b.disabled=false}
+}));
+</script></body></html>
