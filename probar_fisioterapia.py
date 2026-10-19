@@ -17,11 +17,11 @@ import main
 def ejecutar_pruebas():
     print("Iniciando pruebas de VLFisioterapia...")
     with TemporaryDirectory() as carpeta_temporal:
-        archivo_temp = Path(carpeta_temporal) / "citas_test.json"
-        archivo_temp.write_text("[]", encoding="utf-8")
+        db_temp = Path(carpeta_temporal) / "reservas_test.db"
+        agenda_temp = main.AgendaSQLite.desde_negocio(db_temp, main.CLINICA)
 
-        original_archivo = main.ARCHIVO_CITAS
-        main.ARCHIVO_CITAS = archivo_temp
+        original_agenda = main.agenda
+        main.agenda = agenda_temp
         main.SESIONES.clear()
 
         try:
@@ -96,8 +96,8 @@ def ejecutar_pruebas():
                 assert cod_cita.startswith("VF-")
                 assert cita_exitosa["estado"] == "activa"
 
-                # Persistencia en disco
-                citas_disco = json.loads(archivo_temp.read_text(encoding="utf-8"))
+                # Persistencia en base de datos SQLite
+                citas_disco = agenda_temp.listar()
                 assert len(citas_disco) == 1
 
                 # 5. Consulta de cita
@@ -109,6 +109,71 @@ def ejecutar_pruebas():
                     "fecha": dia_str, "servicio": "evaluacion", "fisioterapeuta": "mariana"
                 }).json()["horarios_disponibles"]
                 assert "08:00" not in disp_mariana
+
+                # 5b. Pruebas de cruce por profesional y adyacencia exacta (Fase 7: puntos 3, 4, 5, 6)
+                # Punto 3: Evaluacion (60 min) con mariana a las 10:00 -> aceptada
+                r_m10 = cliente.post("/citas", json={
+                    "cliente": "Paciente Mariana 10",
+                    "servicio": "evaluacion",
+                    "fecha": dia_str,
+                    "hora": "10:00",
+                    "fisioterapeuta": "mariana",
+                    "confirmado": True
+                })
+                assert r_m10.status_code == 201
+                cod_m10 = r_m10.json()["codigo"]
+
+                # Intento a las 10:30 (deportiva, 45 min) con mariana -> 409 (cruce de intervalo)
+                r_cruce = cliente.post("/citas", json={
+                    "cliente": "Paciente Cruce",
+                    "servicio": "deportiva",
+                    "fecha": dia_str,
+                    "hora": "10:30",
+                    "fisioterapeuta": "mariana",
+                    "confirmado": True
+                })
+                assert r_cruce.status_code == 409
+
+                # Punto 4: Lo mismo a las 10:30 con valeria (o sin fisioterapeuta) -> aceptado (cruce es por profesional)
+                r_valeria = cliente.post("/citas", json={
+                    "cliente": "Paciente Valeria 1030",
+                    "servicio": "deportiva",
+                    "fecha": dia_str,
+                    "hora": "10:30",
+                    "fisioterapeuta": "valeria",
+                    "confirmado": True
+                })
+                assert r_valeria.status_code == 201
+                cod_valeria = r_valeria.json()["codigo"]
+
+                # Punto 5: Adyacencia exacta: cita que empieza justo cuando termina la anterior (11:00 con mariana) -> aceptada
+                r_adyacente = cliente.post("/citas", json={
+                    "cliente": "Paciente Adyacente",
+                    "servicio": "deportiva",
+                    "fecha": dia_str,
+                    "hora": "11:00",
+                    "fisioterapeuta": "mariana",
+                    "confirmado": True
+                })
+                assert r_adyacente.status_code == 201
+                cod_adyacente = r_adyacente.json()["codigo"]
+
+                # Punto 6: Reprogramar a horario ocupado -> 409 y conserva sus datos anteriores
+                r_reprog_ocupado = cliente.patch(f"/citas/{cod_valeria}/reprogramar", json={
+                    "nueva_fecha": dia_str,
+                    "nueva_hora": "10:00",
+                    "fisioterapeuta": "mariana",
+                    "confirmado": True
+                })
+                assert r_reprog_ocupado.status_code == 409
+                cita_val_check = cliente.get(f"/citas/{cod_valeria}").json()
+                assert cita_val_check["hora"] == "10:30"
+                assert cita_val_check["fisioterapeuta_asignado"] == "valeria"
+
+                # Limpiar citas auxiliares para no interferir con las secciones siguientes
+                cliente.delete(f"/citas/{cod_m10}", params={"confirmado": True})
+                cliente.delete(f"/citas/{cod_valeria}", params={"confirmado": True})
+                cliente.delete(f"/citas/{cod_adyacente}", params={"confirmado": True})
 
                 # 6. Reprogramación de cita
                 # Reprogramar a las 11:00
@@ -266,7 +331,7 @@ def ejecutar_pruebas():
                 r_reset = enviar_chat("/reset").json()
                 assert "reiniciada" in r_reset["respuesta"]
 
-                # 10. Robustez de almacenamiento y tolerancia a fallos
+                # 10. Robustez de almacenamiento y tolerancia a fallos (fallo SQLite -> 503)
                 datos_falla = {
                     "cliente": "Paciente Prueba",
                     "servicio": "evaluacion",
@@ -274,21 +339,15 @@ def ejecutar_pruebas():
                     "hora": "15:00",
                     "confirmado": True
                 }
-                contenido_antes = archivo_temp.read_text(encoding="utf-8")
-                with patch.object(main.os, "replace", side_effect=OSError("Fallo simulado de E/S")):
+                total_antes = len(agenda_temp.listar())
+                with patch.object(main.sqlite3, "connect", side_effect=main.sqlite3.OperationalError("Fallo simulado de SQLite")):
                     resp_falla = cliente.post("/citas", json=datos_falla)
                     assert resp_falla.status_code == 503
-                assert archivo_temp.read_text(encoding="utf-8") == contenido_antes
-
-                # Archivo corrupto en disco -> no se sobrescribe con vacío
-                archivo_temp.write_text("{json_corrupto_incompleto", encoding="utf-8")
-                resp_corrupto = cliente.get(f"/citas/{nuevo_cod}")
-                assert resp_corrupto.status_code == 503
-                assert archivo_temp.read_text(encoding="utf-8") == "{json_corrupto_incompleto"
+                assert len(agenda_temp.listar()) == total_antes
 
                 print("Todas las pruebas pasaron satisfactoriamente (100% OK).")
         finally:
-            main.ARCHIVO_CITAS = original_archivo
+            main.agenda = original_agenda
             main.SESIONES.clear()
 
 

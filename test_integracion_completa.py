@@ -160,10 +160,10 @@ def probar_todo():
 
             # Comprobar que la cita sigue en la base de datos a pesar de reiniciar el chat
             cita_en_bd = cliente.get(f"/citas/{cod_final}").json()
-            assert cita_en_bd["codigo"] == cod_final, "La cita debe permanecer en citas.json"
-            print(f"  ✓ Comprobación persistencia: La cita {cod_final} sigue existiendo en citas.json!")
+            assert cita_en_bd["codigo"] == cod_final, "La cita debe permanecer en reservas.db"
+            print(f"  ✓ Comprobación persistencia: La cita {cod_final} sigue existiendo en reservas.db!")
 
-            # Cancelar cita de prueba para dejar el json limpio
+            # Cancelar cita de prueba para dejar la base de datos limpia
             cliente.delete(f"/citas/{cod_final}?confirmado=true")
             print(f"  ✓ Cita de prueba {cod_final} cancelada para mantener limpia la agenda.")
 

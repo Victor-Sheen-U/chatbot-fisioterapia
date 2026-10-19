@@ -5,6 +5,7 @@ Diseñada para un solo proceso con RLock y persistencia atómica en JSON.
 
 import json
 import os
+import sqlite3
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from threading import RLock
@@ -18,12 +19,14 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 import uvicorn
 
+from almacen_sqlite import AgendaSQLite, ConflictoReserva, ReservaNoEncontrada, CitaCancelada
+
 BASE = Path(__file__).resolve().parent
-ARCHIVO_CITAS = BASE / "citas.json"
 ARCHIVO_CLINICA = BASE / "clinica.json"
 
 CLINICA = json.loads(ARCHIVO_CLINICA.read_text(encoding="utf-8-sig"))
 ZONA = ZoneInfo(CLINICA["zona_horaria"])
+agenda = AgendaSQLite.desde_negocio(BASE / "reservas.db", CLINICA)
 
 if CLINICA["paso_minutos"] <= 0:
     raise ValueError("El paso de minutos debe ser positivo.")
@@ -123,34 +126,22 @@ class MensajeChat(BaseModel):
 # PERSISTENCIA Y FUNCIONES AUXILIARES
 # ==============================================================================
 
-def leer_citas() -> list[dict]:
-    """Lee citas.json de forma segura sin sobrescribir ante errores."""
+def responder(funcion, *args, **kwargs):
     try:
-        contenido = json.loads(ARCHIVO_CITAS.read_text(encoding="utf-8-sig"))
-        if not isinstance(contenido, list):
-            raise ValueError("El archivo de citas no contiene una lista JSON.")
-        return [RegistroCita.model_validate(r).model_dump(mode="json") for r in contenido]
-    except (OSError, ValueError) as exc:
+        return funcion(*args, **kwargs)
+    except CitaCancelada as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except ReservaNoEncontrada as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ConflictoReserva as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (ValueError, ValidationError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except sqlite3.Error as error:
         raise HTTPException(
             status_code=503,
-            detail="No se pudo leer citas.json. Verifique el archivo; no ha sido sobrescrito."
-        ) from exc
-
-
-def guardar_citas(citas: list[dict]):
-    """Guarda citas de forma atómica usando un archivo temporal y fsync."""
-    temporal = ARCHIVO_CITAS.with_suffix(".tmp")
-    try:
-        with temporal.open("w", encoding="utf-8") as archivo:
-            json.dump(citas, archivo, ensure_ascii=False, indent=2)
-            archivo.flush()
-            os.fsync(archivo.fileno())
-        os.replace(temporal, ARCHIVO_CITAS)
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Error al escribir en disco. La operación no pudo confirmarse."
-        ) from exc
+            detail="Error de base de datos. La operación no pudo confirmarse."
+        ) from error
 
 
 ALIAS_SERVICIOS = {
@@ -216,53 +207,13 @@ def validar_fisioterapeuta(clave_fisio: str | None, clave_servicio: str) -> str:
 
 def obtener_horarios_disponibles(fecha: date, clave_servicio: str, clave_fisio: str | None = None) -> list[str]:
     """Calcula los bloques horarios disponibles verificando agenda del profesional y horario de clínica."""
-    servicio = validar_servicio(clave_servicio)
-    duracion = servicio["duracion_minutos"]
-    ahora = datetime.now(ZONA)
-
-    if fecha < ahora.date():
-        raise HTTPException(status_code=422, detail="La fecha seleccionada ya pasó. Seleccione una fecha futura.")
-
-    # 0 = lunes, 6 = domingo
-    dia_semana = str(fecha.weekday())
-    horario_dia = CLINICA["horarios"].get(dia_semana)
-    if not horario_dia:
-        return []  # Clínica cerrada (ej. domingos)
-
-    apertura = datetime.combine(fecha, time.fromisoformat(horario_dia[0]), ZONA)
-    cierre = datetime.combine(fecha, time.fromisoformat(horario_dia[1]), ZONA)
-
-    citas_existentes = leer_citas()
-    citas_activas = [c for c in citas_existentes if c["fecha"] == fecha.isoformat() and c["estado"] == "activa"]
-
-    # Determinar qué profesionales aplican
-    fisios_candidatos = [clave_fisio] if clave_fisio else [
-        k for k, v in CLINICA["fisioterapeutas"].items() if clave_servicio in v["servicios_asignados"]
-    ]
-
-    slots_libres: set[str] = set()
-    paso = timedelta(minutes=CLINICA["paso_minutos"])
-
-    for fisio in fisios_candidatos:
-        # Citas ocupadas por este fisio específico
-        ocupados = []
-        for c in citas_activas:
-            if c.get("fisioterapeuta_asignado") == fisio:
-                inicio_cita = datetime.combine(fecha, time.fromisoformat(c["hora"]), ZONA)
-                fin_cita = inicio_cita + timedelta(minutes=c["duracion_minutos"])
-                ocupados.append((inicio_cita, fin_cita))
-
-        cursor = apertura
-        while cursor + timedelta(minutes=duracion) <= cierre:
-            fin_slot = cursor + timedelta(minutes=duracion)
-            # Debe ser en el futuro y no solapar
-            if cursor > ahora:
-                solapa = any(cursor < hasta and fin_slot > desde for desde, hasta in ocupados)
-                if not solapa:
-                    slots_libres.add(cursor.strftime("%H:%M"))
-            cursor += paso
-
-    return sorted(list(slots_libres))
+    res = responder(
+        agenda.disponibilidad,
+        fecha.isoformat(),
+        clave_servicio,
+        fisioterapeuta=clave_fisio
+    )
+    return res["horarios_disponibles"]
 
 
 def formatear_pesos(valor: int) -> str:
@@ -334,95 +285,39 @@ def consultar_disponibilidad(
 def agendar_cita(datos: CrearCita):
     """Registra una nueva cita médica con validación de disponibilidad y bloqueo concurrente."""
     with LOCK:
-        citas = leer_citas()
-        fisio_clave = validar_fisioterapeuta(datos.fisioterapeuta, datos.servicio)
-        libres = obtener_horarios_disponibles(datos.fecha, datos.servicio, fisio_clave)
-
-        if datos.hora not in libres:
-            raise HTTPException(
-                status_code=409,
-                detail="El horario o profesional seleccionado no está disponible en esa fecha y hora."
-            )
-
-        servicio = validar_servicio(datos.servicio)
-        codigo = "VF-" + uuid4().hex[:10].upper()
-        ahora_iso = datetime.now(ZONA).isoformat()
-
-        nuevo_registro = RegistroCita(
-            codigo=codigo,
+        fila = responder(
+            agenda.crear,
             cliente=datos.cliente,
             servicio=datos.servicio,
-            fecha=datos.fecha,
+            fecha=datos.fecha.isoformat(),
             hora=datos.hora,
-            fisioterapeuta=fisio_clave,
-            fisioterapeuta_asignado=fisio_clave,
+            fisioterapeuta=datos.fisioterapeuta,
             telefono=datos.telefono,
             motivo_consulta=datos.motivo_consulta,
-            estado="activa",
-            precio_cop=servicio["precio_cop"],
-            duracion_minutos=servicio["duracion_minutos"],
-            creada_en=ahora_iso
-        ).model_dump(mode="json")
-
-        citas.append(nuevo_registro)
-        guardar_citas(citas)
-        return nuevo_registro
+        )
+        return RegistroCita.model_validate(fila).model_dump(mode="json")
 
 
 @app.get("/citas/{codigo}", tags=["Citas"])
 def consultar_cita(codigo: str):
     """Consulta el estado y detalles de una cita mediante su código VF-..."""
     with LOCK:
-        cod = codigo.strip().upper()
-        for c in leer_citas():
-            if c["codigo"] == cod:
-                return c
-        raise HTTPException(status_code=404, detail=f"No se encontró ninguna cita con el código {cod}.")
+        fila = responder(agenda.consultar, codigo)
+        return RegistroCita.model_validate(fila).model_dump(mode="json")
 
 
 @app.patch("/citas/{codigo}/reprogramar", tags=["Citas"])
 def reprogramar_cita(codigo: str, datos: ReprogramarCita):
     """Reprograma una cita existente a una nueva fecha y hora disponible."""
     with LOCK:
-        citas = leer_citas()
-        cod = codigo.strip().upper()
-        cita_objetivo = None
-        for c in citas:
-            if c["codigo"] == cod:
-                cita_objetivo = c
-                break
-
-        if not cita_objetivo:
-            raise HTTPException(status_code=404, detail=f"Cita {cod} no encontrada.")
-        if cita_objetivo["estado"] == "cancelada":
-            raise HTTPException(status_code=400, detail="No se puede reprogramar una cita cancelada.")
-
-        # Verificar disponibilidad para la nueva fecha y hora
-        fisio = datos.fisioterapeuta or cita_objetivo["fisioterapeuta_asignado"]
-        libres = obtener_horarios_disponibles(datos.nueva_fecha, cita_objetivo["servicio"], fisio)
-
-        if datos.nueva_hora not in libres:
-            raise HTTPException(
-                status_code=409,
-                detail=f"La nueva fecha {datos.nueva_fecha} a las {datos.nueva_hora} no está disponible."
-            )
-
-        # Registrar en historial y actualizar
-        historial = cita_objetivo.get("historial_reprogramaciones", [])
-        historial.append({
-            "fecha_anterior": cita_objetivo["fecha"],
-            "hora_anterior": cita_objetivo["hora"],
-            "modificada_en": datetime.now(ZONA).isoformat()
-        })
-
-        cita_objetivo["fecha"] = datos.nueva_fecha.isoformat()
-        cita_objetivo["hora"] = datos.nueva_hora
-        cita_objetivo["fisioterapeuta_asignado"] = fisio
-        cita_objetivo["reprogramada_en"] = datetime.now(ZONA).isoformat()
-        cita_objetivo["historial_reprogramaciones"] = historial
-        guardar_citas(citas)
-
-        return cita_objetivo
+        fila = responder(
+            agenda.modificar,
+            codigo,
+            fecha=datos.nueva_fecha.isoformat(),
+            hora=datos.nueva_hora,
+            fisioterapeuta=datos.fisioterapeuta,
+        )
+        return RegistroCita.model_validate(fila).model_dump(mode="json")
 
 
 @app.delete("/citas/{codigo}", tags=["Citas"])
@@ -431,16 +326,8 @@ def cancelar_cita(codigo: str, confirmado: bool = Query(False)):
     if not confirmado:
         raise HTTPException(status_code=422, detail="Se requiere 'confirmado=true' para ejecutar la cancelación.")
     with LOCK:
-        citas = leer_citas()
-        cod = codigo.strip().upper()
-        for c in citas:
-            if c["codigo"] == cod:
-                if c["estado"] == "activa":
-                    c["estado"] = "cancelada"
-                    c["cancelada_en"] = datetime.now(ZONA).isoformat()
-                    guardar_citas(citas)
-                return c
-        raise HTTPException(status_code=404, detail=f"No existe cita con el código {cod}.")
+        fila = responder(agenda.cancelar, codigo)
+        return RegistroCita.model_validate(fila).model_dump(mode="json")
 
 
 @app.post("/escalar", tags=["Derivación"])
